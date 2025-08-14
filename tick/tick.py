@@ -46,9 +46,10 @@ class StockTickerApp(QWidget):
         self.tickers = tickers
         self.prices = {}
         self.daily_changes = {}
+        self.is_updating = False # Flag to prevent multiple updates at once
 
         self.full_plain_text = ""
-        self.color_map = []  # New: a list to hold the color for each character
+        self.color_map = []
         self.scroll_pos = 0.0
         self.display_length = 100
         
@@ -73,6 +74,8 @@ class StockTickerApp(QWidget):
         main_layout.addWidget(self.ticker_label)
 
     def start_timers(self):
+        # Initial data fetch
+        self.is_updating = True
         self.thread = QThread()
         self.worker = Worker(self.tickers)
         self.worker.moveToThread(self.thread)
@@ -80,39 +83,40 @@ class StockTickerApp(QWidget):
         self.worker.finished.connect(self.handle_initial_update)
         self.thread.start()
 
-        self.price_update_timer = QTimer(self)
-        self.price_update_timer.timeout.connect(self.start_update_thread)
-        self.price_update_timer.start(15000)
-
+        # The scroll timer runs continuously
         self.scroll_timer = QTimer(self)
         self.scroll_timer.timeout.connect(self.scroll_ticker)
         self.scroll_timer.start(50)
 
     def start_update_thread(self):
-        self.thread = QThread()
-        self.worker = Worker(self.tickers)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.get_stock_prices_and_changes)
-        self.worker.finished.connect(self.handle_prices_update)
-        self.thread.start()
+        if not self.is_updating:
+            self.is_updating = True
+            self.thread = QThread()
+            self.worker = Worker(self.tickers)
+            self.worker.moveToThread(self.thread)
+            self.thread.started.connect(self.worker.get_stock_prices_and_changes)
+            self.worker.finished.connect(self.handle_prices_update)
+            self.thread.start()
 
     def handle_initial_update(self, new_prices, new_changes):
         self.prices = new_prices
         self.daily_changes = new_changes
-        self.update_display_strings()
+        self.update_ticker_content()
+        self.is_updating = False
         self.thread.quit()
         self.thread.wait()
 
     def handle_prices_update(self, new_prices, new_changes):
         self.prices = new_prices
         self.daily_changes = new_changes
-        self.update_display_strings()
+        self.update_ticker_content()
+        self.is_updating = False
         self.thread.quit()
         self.thread.wait()
 
-    def update_display_strings(self):
-        self.full_plain_text = ""
-        self.color_map = []
+    def update_ticker_content(self):
+        new_full_plain_text = ""
+        new_color_map = []
         
         separator = "  |  "
         separator_color = "grey"
@@ -125,24 +129,22 @@ class StockTickerApp(QWidget):
                 color = "green" if change >= 0 else "red"
                 arrow = "▲" if change >= 0 else "▼"
                 
-                # Format the text for this stock
                 text_part = f" {ticker}: ${price:.2f} {arrow}{change:.2f}% "
-                self.full_plain_text += text_part
+                new_full_plain_text += text_part
                 
-                # Append the colors for each character in the text
-                self.color_map.extend(['white'] * (len(ticker) + 2)) # " ticker: "
-                self.color_map.extend([color] * (len(text_part) - len(ticker) - 2)) # "$123.45 ▲1.23%"
+                new_color_map.extend(['white'] * (len(ticker) + 2))
+                new_color_map.extend([color] * (len(text_part) - len(ticker) - 2))
             else:
                 text_part = f" {ticker}: N/A "
-                self.full_plain_text += text_part
-                self.color_map.extend(['white'] * len(text_part))
+                new_full_plain_text += text_part
+                new_color_map.extend(['white'] * len(text_part))
             
-            # Add separator text and colors
-            if i < len(self.tickers) -1:
-                self.full_plain_text += separator
-                self.color_map.extend([separator_color] * len(separator))
+            if i < len(self.tickers) - 1:
+                new_full_plain_text += separator
+                new_color_map.extend([separator_color] * len(separator))
 
-        self.scroll_pos = 0.0
+        self.full_plain_text = new_full_plain_text
+        self.color_map = new_color_map
     
     def scroll_ticker(self):
         if self.full_plain_text and self.color_map:
@@ -151,30 +153,29 @@ class StockTickerApp(QWidget):
             start_pos = int(self.scroll_pos)
             end_pos = start_pos + self.display_length
             
-            # Build the HTML string character by character
+            # Check for a new cycle to trigger an update
+            if self.scroll_pos < 0.25 and not self.is_updating:
+                self.start_update_thread()
+            
             html_parts = []
             
-            # A helper to wrap text with color tags
             def get_colored_char(char_index):
                 char = self.full_plain_text[char_index]
                 color = self.color_map[char_index]
                 return f"<font color='{color}'>{char}</font>"
 
             if end_pos > text_length:
-                # Handle wrap-around scrolling
                 for i in range(start_pos, text_length):
                     html_parts.append(get_colored_char(i))
                 for i in range(end_pos - text_length):
                     html_parts.append(get_colored_char(i))
             else:
-                # Handle regular scrolling
                 for i in range(start_pos, end_pos):
                     html_parts.append(get_colored_char(i))
             
             self.ticker_label.setText("".join(html_parts))
             
             self.scroll_pos = (self.scroll_pos + 0.25) % text_length
-
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
